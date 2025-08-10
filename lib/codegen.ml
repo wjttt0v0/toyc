@@ -102,6 +102,7 @@ let rec gen_expr env expr : string list =
                  Printf.sprintf "  li %s, 1" t0;
                  Printf.sprintf "%s:" end_label]
           | _ ->
+            (* --- 优化 2: 代数化简 & 强度削减 --- *)
             let e1_const = eval_const_expr e1 in
             let e2_const = eval_const_expr e2 in
             (match (op, e1, e2, e1_const, e2_const) with
@@ -122,25 +123,32 @@ let rec gen_expr env expr : string list =
                 @ [Printf.sprintf "  addi %s, %s, -4" sp sp; Printf.sprintf "  sw %s, 0(%s)" t0 sp]
                 @ e2_code
                 @ [Printf.sprintf "  lw %s, 0(%s)" t1 sp; Printf.sprintf "  addi %s, %s, 4" sp sp]
-                @ (let r1 = t0 and r2 = t1 in match op with
-                  | Add -> [Printf.sprintf "  add %s, %s, %s" r1 r2 r1]
-                  | Sub -> [Printf.sprintf "  sub %s, %s, %s" r1 r2 r1]
-                  | Mul -> [Printf.sprintf "  mul %s, %s, %s" r1 r2 r1]
-                  | Div -> [Printf.sprintf "  div %s, %s, %s" r1 r2 r1]
-                  | Mod -> [Printf.sprintf "  rem %s, %s, %s" r1 r2 r1]
-                  | Eq  -> [Printf.sprintf "  sub %s, %s, %s; seqz %s, %s" r1 r2 r1 r1 r1]
-                  | Neq -> [Printf.sprintf "  sub %s, %s, %s; snez %s, %s" r1 r2 r1 r1 r1]
-                  | Lt  -> [Printf.sprintf "  slt %s, %s, %s" r1 r2 r1]
-                  | Gt  -> [Printf.sprintf "  sgt %s, %s, %s" r1 r2 r1]
-                  (*** START OF FIXED SECTION ***)
-                  | Le  -> [Printf.sprintf "  sgt %s, %s, %s; xori %s, %s, 1" r1 r1 r2 r1 r1]
-                  | Ge  -> [Printf.sprintf "  slt %s, %s, %s; xori %s, %s, 1" r1 r1 r2 r1 r1]
-                  (*** END OF FIXED SECTION ***)
+                @ (match op with
+                  | Add -> [Printf.sprintf "  add %s, %s, %s" t0 t1 t0]
+                  | Sub -> [Printf.sprintf "  sub %s, %s, %s" t0 t1 t0]
+                  | Mul -> [Printf.sprintf "  mul %s, %s, %s" t0 t1 t0]
+                  | Div -> [Printf.sprintf "  div %s, %s, %s" t0 t1 t0]
+                  | Mod -> [Printf.sprintf "  rem %s, %s, %s" t0 t1 t0]
+                  | Eq  -> [Printf.sprintf "  sub %s, %s, %s" t0 t1 t0; Printf.sprintf "  seqz %s, %s" t0 t0]
+                  | Neq -> [Printf.sprintf "  sub %s, %s, %s" t0 t1 t0; Printf.sprintf "  snez %s, %s" t0 t0]
+                  | Lt  -> [Printf.sprintf "  slt %s, %s, %s" t0 t1 t0]
+                  | Le  -> [Printf.sprintf "  sgt %s, %s, %s" t0 t1 t0; Printf.sprintf "  xori %s, %s, 1" t0 t0]
+                  | Gt  -> [Printf.sprintf "  sgt %s, %s, %s" t0 t1 t0]
+                  | Ge  -> [Printf.sprintf "  slt %s, %s, %s" t0 t1 t0; Printf.sprintf "  xori %s, %s, 1" t0 t0]
                   | _ -> [])
             )
           )
+      (* --- MODIFIED PART START: ECall Handler --- *)
       | ECall (id, args) ->
           let arg_space = 4 * List.length args in
+          (*
+            1. 参数求值与压栈：
+               - 使用 `List.fold_left` 配合 `List.rev` 来实现从右到左的参数求值。
+               - `acc_code` 是累积至今的汇编代码。
+               - 对每个 `arg`，先生成其求值代码 `current_arg_code`。
+               - 然后，在其后追加将结果(在t0)压入栈的指令。
+               - 这种结构确保了嵌套调用 `f(g())` 的正确性。
+          *)
           let reversed_args = List.rev args in
           let arg_eval_code = List.fold_left (fun acc_code arg ->
               let current_arg_code = gen_expr env arg in
@@ -150,12 +158,28 @@ let rec gen_expr env expr : string list =
                 ] in
               acc_code @ current_arg_code @ push_code
             ) [] reversed_args in
+
+          (* 2. 函数调用指令 *)
           let call_instruction = [Printf.sprintf "  call %s" id] in
-          let cleanup_code = if arg_space > 0 then [Printf.sprintf "  addi %s, %s, %d" sp sp arg_space] else [] in
+
+          (* 3. 调用者清理栈：将 sp 加回参数所占用的总空间 *)
+          let cleanup_code =
+              if arg_space > 0 then
+                  [Printf.sprintf "  addi %s, %s, %d" sp sp arg_space]
+              else
+                  []
+          in
+
+          (* 4. 获取返回值：将 a0 的值移动到 t0，作为表达式的结果 *)
           let move_return_value = [Printf.sprintf "  mv %s, %s" t0 a0] in
+
+          (* 将所有部分按正确顺序拼接起来 *)
           arg_eval_code @ call_instruction @ cleanup_code @ move_return_value
+      (* --- MODIFIED PART END --- *)
+
 
 and gen_stmt env stmt : string list =
+  (* ... (This function remains unchanged from the previous correct version) ... *)
   match stmt with
   | SExpr e -> gen_expr env e
   | SReturn (Some e) -> (gen_expr env e) @ [Printf.sprintf "  mv %s, %s" a0 t0; Printf.sprintf "  j %s" env.exit_label]
@@ -168,21 +192,28 @@ and gen_stmt env stmt : string list =
       let cond_code = gen_expr env cond in
       (match else_opt with
       | Some else_stmt ->
-          cond_code @ [Printf.sprintf "  beqz %s, %s" t0 else_label]
-          @ (gen_stmt env then_stmt) @ [Printf.sprintf "  j %s" end_label]
-          @ [Printf.sprintf "%s:" else_label] @ (gen_stmt env else_stmt)
+          cond_code
+          @ [Printf.sprintf "  beqz %s, %s" t0 else_label]
+          @ (gen_stmt env then_stmt)
+          @ [Printf.sprintf "  j %s" end_label]
+          @ [Printf.sprintf "%s:" else_label]
+          @ (gen_stmt env else_stmt)
           @ [Printf.sprintf "%s:" end_label]
       | None ->
-          cond_code @ [Printf.sprintf "  beqz %s, %s" t0 end_label]
-          @ (gen_stmt env then_stmt) @ [Printf.sprintf "%s:" end_label]
+          cond_code
+          @ [Printf.sprintf "  beqz %s, %s" t0 end_label]
+          @ (gen_stmt env then_stmt)
+          @ [Printf.sprintf "%s:" end_label]
       )
   | SWhile (cond, body) ->
       let start_label = new_label "L_while_start" in
       let end_label = new_label "L_while_end" in
       let loop_env = { env with break_label = Some end_label; continue_label = Some start_label } in
       [Printf.sprintf "%s:" start_label]
-      @ (gen_expr env cond) @ [Printf.sprintf "  beqz %s, %s" t0 end_label]
-      @ (gen_stmt loop_env body) @ [Printf.sprintf "  j %s" start_label]
+      @ (gen_expr env cond)
+      @ [Printf.sprintf "  beqz %s, %s" t0 end_label]
+      @ (gen_stmt loop_env body)
+      @ [Printf.sprintf "  j %s" start_label]
       @ [Printf.sprintf "%s:" end_label]
   | SBreak -> (match env.break_label with Some l -> [Printf.sprintf "  j %s" l] | None -> failwith "break")
   | SContinue -> (match env.continue_label with Some l -> [Printf.sprintf "  j %s" l] | None -> failwith "continue")
@@ -190,15 +221,16 @@ and gen_stmt env stmt : string list =
       let locals_in_block = count_local_vars_stmt (SBlock stmts) in
       let block_space = locals_in_block * 4 in
       let block_env = 
-        let current_offset = (match env.var_map with | (_, off)::_ -> off-4 | [] -> -8) in
+        let new_offset = env.current_offset - block_space in
         let (updated_var_map, _) = List.fold_left (fun (map, off) s ->
           match s with
-          | SDecl(id, _) -> ((id, off) :: map, off-4)
+          | SDecl(id, _) -> let new_off = off - 4 in ((id, new_off) :: map, new_off)
           | _ -> (map, off)
-        ) (env.var_map, current_offset) stmts in
-        { env with var_map = updated_var_map } in
+        ) (env.var_map, env.current_offset) stmts in
+        { env with var_map = updated_var_map; current_offset = new_offset } in
+      let body_code = List.concat_map (gen_stmt block_env) stmts in
       (if block_space > 0 then [Printf.sprintf "  addi %s, %s, -%d" sp sp block_space] else [])
-      @ (List.concat_map (gen_stmt block_env) stmts)
+      @ body_code
       @ (if block_space > 0 then [Printf.sprintf "  addi %s, %s, %d" sp sp block_space] else [])
 
 let gen_func_def f : string list =
@@ -208,42 +240,56 @@ let gen_func_def f : string list =
   let env_with_params, _ = List.fold_left (fun (env, i) (PInt id) ->
     let param_offset = 8 + i * 4 in
     ({env with var_map = (id, param_offset) :: env.var_map}, i + 1)
-  ) (({ var_map = []; current_offset = -8; exit_label; break_label=None; continue_label=None }), 0) f.params in
-  
-  let rec build_env_for_locals env stmt_list =
-    List.fold_left (fun e s ->
-        match s with
-        | SDecl(id, _) -> {e with var_map = (id, e.current_offset)::e.var_map; current_offset = e.current_offset - 4}
-        | SBlock stmts -> build_env_for_locals e stmts
-        | SIf (_, s1, Some s2) -> build_env_for_locals (build_env_for_locals e [s1]) [s2]
-        | SIf (_, s1, None) -> build_env_for_locals e [s1]
-        | SWhile (_, s) -> build_env_for_locals e [s]
-        | _ -> e
-    ) env stmt_list
-  in
-  let final_env = build_env_for_locals env_with_params (match f.body with SBlock b -> b | _ -> [f.body]) in
+  ) (({ var_map = []; current_offset = 0; exit_label; break_label=None; continue_label=None }), 0) f.params in
+  let rec build_env_for_locals current_offset stmts =
+    List.fold_left (fun (env, offset) stmt ->
+      match stmt with
+      | SDecl (id, _) -> let new_offset = offset - 4 in ({ env with var_map = (id, new_offset) :: env.var_map }, new_offset)
+      | SBlock block_stmts -> build_env_for_locals offset block_stmts
+      | SIf (_, s1, s2o) ->
+          let env', off' = build_env_for_locals offset [s1] in
+          (match s2o with Some s2 -> build_env_for_locals off' [s2] | None -> (env', off'))
+      | SWhile (_, s) -> build_env_for_locals offset [s] | _ -> (env, offset)
+    ) (env_with_params, current_offset) stmts in
+  let final_env, _ = build_env_for_locals 0 (match f.body with SBlock stmts -> stmts | s -> [s]) in
   let body_code = gen_stmt final_env f.body in
-  
-  [Printf.sprintf ".globl %s" f.name; Printf.sprintf "%s:" f.name]
+  [Printf.sprintf "%s:" f.name]
   @ [Printf.sprintf "  addi %s, %s, -8" sp sp; Printf.sprintf "  sw %s, 4(%s)" ra sp; Printf.sprintf "  sw %s, 0(%s)" fp sp; Printf.sprintf "  mv %s, %s" fp sp]
   @ (if locals_space > 0 then [Printf.sprintf "  addi %s, %s, -%d" sp sp locals_space] else [])
   @ body_code
   @ [Printf.sprintf "%s:" exit_label]
   @ [Printf.sprintf "  mv %s, %s" sp fp; Printf.sprintf "  lw %s, 4(%s)" ra sp; Printf.sprintf "  lw %s, 0(%s)" fp sp; Printf.sprintf "  addi %s, %s, 8" sp sp; Printf.sprintf "  ret\n"]
 
+(* --- 优化 3: 窥孔优化 (保持) --- *)
 let peephole_optimize (code: string list) : string list =
   let rec optimize_pass instrs =
     match instrs with
-    | ins1 :: ins2 :: rest when (Scanf.sscanf_opt ins1 "  sw %s, %d(%s@)" (fun r1 n1 b1 -> Scanf.sscanf_opt ins2 "  lw %s, %d(%s@)" (fun r2 n2 b2 -> if r1=r2 && n1=n2 && b1=b2 then Some () else None)) |> Option.is_some) -> ins1 :: (optimize_pass rest)
-    | ins1 :: rest when (String.starts_with ~prefix:"  j" ins1 || String.starts_with ~prefix:"  ret" ins1) -> let rec drop_unreachable remaining = match remaining with | [] -> [] | l :: ls when String.ends_with ~suffix:":" l -> l :: ls | _ :: ls -> drop_unreachable ls in ins1 :: (optimize_pass (drop_unreachable rest))
+    | ins1 :: ins2 :: rest when (
+        Scanf.sscanf_opt ins1 "  sw %s, %d(%s@)" (fun r1 n1 b1 ->
+        Scanf.sscanf_opt ins2 "  lw %s, %d(%s@)" (fun r2 n2 b2 ->
+            if r1 = r2 && n1 = n2 && b1 = b2 then Some () else None
+        )) |> Option.is_some
+      ) -> ins1 :: (optimize_pass rest)
+    | ins1 :: rest when (String.starts_with ~prefix:"  j" ins1 || String.starts_with ~prefix:"  ret" ins1) ->
+        let rec drop_unreachable remaining =
+          match remaining with
+          | [] -> []
+          | l :: ls when String.ends_with ~suffix:":" l -> l :: ls
+          | _ :: ls -> drop_unreachable ls
+        in
+        ins1 :: (optimize_pass (drop_unreachable rest))
     | ins :: rest -> ins :: (optimize_pass rest)
     | [] -> []
   in
   let prev_code_ref = ref [] in
   let next_code_ref = ref code in
-  while !next_code_ref <> !prev_code_ref do prev_code_ref := !next_code_ref; next_code_ref := optimize_pass !next_code_ref done;
+  while !next_code_ref <> !prev_code_ref do
+    prev_code_ref := !next_code_ref;
+    next_code_ref := optimize_pass !next_code_ref
+  done;
   !next_code_ref
 
+(* 主生成函数 *)
 let gen_comp_unit oc (CUnit funcs) =
   let unoptimized_code = [".text\n.global main"] @ List.concat_map gen_func_def funcs in
   let optimized_code = peephole_optimize unoptimized_code in
