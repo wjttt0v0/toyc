@@ -200,7 +200,6 @@ and gen_stmt env stmt : string list =
       (if block_space > 0 then [Printf.sprintf "  addi %s, %s, -%d" sp sp block_space] else [])
       @ (List.concat_map (gen_stmt block_env) stmts)
       @ (if block_space > 0 then [Printf.sprintf "  addi %s, %s, %d" sp sp block_space] else [])
-  | _ -> []
 
 let gen_func_def f : string list =
   let exit_label = new_label ("L_exit_" ^ f.name) in
