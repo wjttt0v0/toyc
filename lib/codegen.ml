@@ -103,21 +103,33 @@ let rec gen_expr env regs expr : (string list * string list) =
               | Gt  -> Printf.sprintf "  sgt %s, %s, %s" r1 r1 r2 | Le  -> Printf.sprintf "  sgt %s, %s, %s; xori %s, %s, 1" r1 r1 r2 r1 r1
               | Ge  -> Printf.sprintf "  slt %s, %s, %s; xori %s, %s, 1" r1 r1 r2 r1 r1 | _   -> "" 
             in (e1_code @ e2_code @ [op_code], regs_after_e2)
+
+      (*** START OF MODIFIED SECTION ***)
       | ECall (id, args) ->
-          let stack_space = 4 * List.length temp_regs in
-          let save_regs = List.mapi (fun i r -> Printf.sprintf "  sw %s, %d(%s)" r (i*4) sp) temp_regs in
-          let adj_sp_down = [Printf.sprintf "  addi %s, %s, -%d" sp sp stack_space] @ save_regs in
+          (* Step 1: Evaluate arguments from right-to-left and push onto stack *)
           let arg_eval_code = List.fold_left (fun acc_code arg ->
               let (current_arg_code, _) = gen_expr env temp_regs arg in
-              let push_code = [Printf.sprintf "  addi %s, %s, -4" sp sp; Printf.sprintf "  sw %s, 0(%s)" (List.hd temp_regs) sp] in
+              let push_code = [
+                  Printf.sprintf "  addi %s, %s, -4" sp sp;
+                  Printf.sprintf "  sw %s, 0(%s)" (List.hd temp_regs) sp
+                ] in
               acc_code @ current_arg_code @ push_code
             ) [] (List.rev args) in
+
+          (* Step 2: Make the function call *)
           let call_instruction = [Printf.sprintf "  call %s" id] in
-          let cleanup_code = if not (args = []) then [Printf.sprintf "  addi %s, %s, %d" sp sp (4 * List.length args)] else [] in
-          let restore_regs = List.mapi (fun i r -> Printf.sprintf "  lw %s, %d(%s)" r (i*4) sp) temp_regs in
-          let adj_sp_up = restore_regs @ [Printf.sprintf "  addi %s, %s, %d" sp sp stack_space] in
+          
+          (* Step 3: Caller cleans up the stack *)
+          let cleanup_code =
+              let arg_space = 4 * List.length args in
+              if arg_space > 0 then [Printf.sprintf "  addi %s, %s, %d" sp sp arg_space] else []
+          in
+
+          (* Step 4: The return value is in a0. Move it to our target register. *)
           let move_return_value = [Printf.sprintf "  mv %s, %s" target_reg a0] in
-          (adj_sp_down @ arg_eval_code @ call_instruction @ cleanup_code @ adj_sp_up @ move_return_value, rest_regs)
+          
+          (arg_eval_code @ call_instruction @ cleanup_code @ move_return_value, rest_regs)
+      (*** END OF MODIFIED SECTION ***)
 
 and gen_stmt env stmt : string list =
   match stmt with
@@ -154,17 +166,12 @@ and gen_stmt env stmt : string list =
   | SContinue -> (match env.continue_label with Some l -> [Printf.sprintf "  j %s" l] | None -> failwith "continue used outside a loop")
   | SBlock stmts -> List.concat_map (gen_stmt env) stmts
 
-(*** START OF MODIFIED SECTION ***)
 let gen_func_def f : string list =
   let exit_label = new_label ("L_exit_" ^ f.name) in
   let num_locals = count_local_vars_stmt f.body in
   let num_params = List.length f.params in
-  
-  (* Total stack space needed for local variables AND saved parameters *)
   let locals_and_params_space = (num_locals + num_params) * 4 in
-  let stack_size = 8 (* ra & old fp *) + locals_and_params_space in
-
-  (* Create the initial environment and code to save parameters from registers to stack *)
+  let stack_size = 8 + locals_and_params_space in
   let initial_offset = -8 in
   let (env_with_params, save_params_code, offset_after_params) =
     List.fold_left (fun (env, code, offset) (param_idx, PInt id) ->
@@ -176,8 +183,6 @@ let gen_func_def f : string list =
     ) ({ var_map = []; current_offset=0; exit_label; break_label=None; continue_label=None }, [], initial_offset) 
       (List.mapi (fun i p -> (i, p)) f.params)
   in
-
-  (* Now, find offsets for SDecl locals, starting from where params left off *)
   let (final_env, _) =
     let rec build_env_for_decls current_env offset stmt_list =
       List.fold_left (fun (env, off) stmt ->
@@ -193,20 +198,15 @@ let gen_func_def f : string list =
     in
     build_env_for_decls env_with_params offset_after_params (match f.body with SBlock stmts -> stmts | s -> [s])
   in
-  
   let body_code = gen_stmt final_env f.body in
-
   [Printf.sprintf ".globl %s" f.name; Printf.sprintf "%s:" f.name]
-  (* Prologue *)
   @ [ Printf.sprintf "  addi %s, %s, -%d" sp sp stack_size;
       Printf.sprintf "  sw %s, %d(%s)" ra (stack_size - 4) sp;
       Printf.sprintf "  sw %s, %d(%s)" fp (stack_size - 8) sp;
       Printf.sprintf "  addi %s, %s, %d" fp sp stack_size;
     ]
-  @ save_params_code (* <-- This is the new, crucial part *)
-  (* Body *)
+  @ save_params_code
   @ body_code
-  (* Epilogue *)
   @ [ Printf.sprintf "%s:" exit_label;
       Printf.sprintf "  addi %s, %s, -%d" sp fp stack_size;
       Printf.sprintf "  lw %s, %d(%s)" ra (stack_size-4) sp;
@@ -214,7 +214,6 @@ let gen_func_def f : string list =
       Printf.sprintf "  addi %s, %s, %d" sp sp stack_size;
       Printf.sprintf "  ret"
     ]
-(*** END OF MODIFIED SECTION ***)
 
 let peephole_optimize (code: string list) : string list =
   let rec optimize_pass instrs = match instrs with
