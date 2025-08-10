@@ -1,0 +1,62 @@
+type token =
+    WHILE
+  | VOID
+  | TIMES
+  | SEMI
+  | RPAREN
+  | RETURN
+  | RBRACE
+  | PLUS
+  | OR
+  | NUMBER of int
+  | NOT
+  | NEQ
+  | MOD
+  | MINUS
+  | LT
+  | LPAREN
+  | LE
+  | LBRACE
+  | INT
+  | IF
+  | ID of string
+  | GT
+  | GE
+  | EQ
+  | EOF
+  | ELSE
+  | DIV
+  | CONTINUE
+  | COMMA
+  | BREAK
+  | ASSIGN
+  | AND
+val menhir_begin_marker : int
+val xv_unary_expr : Ast.expr
+val xv_stmt : Ast.stmt
+val xv_separated_nonempty_list_COMMA_param_ : Ast.param list
+val xv_separated_nonempty_list_COMMA_expr_ : Ast.expr list
+val xv_separated_list_COMMA_param_ : Ast.param list
+val xv_separated_list_COMMA_expr_ : Ast.expr list
+val xv_rel_op : Ast.binop
+val xv_rel_expr : Ast.expr
+val xv_primary_expr : Ast.expr
+val xv_param : Ast.param
+val xv_or_expr : Ast.expr
+val xv_mul_op : Ast.binop
+val xv_mul_expr : Ast.expr
+val xv_loption_separated_nonempty_list_COMMA_param__ : Ast.param list
+val xv_loption_separated_nonempty_list_COMMA_expr__ : Ast.expr list
+val xv_list_stmt_ : Ast.stmt list
+val xv_list_func_def_ : Ast.func_def list
+val xv_func_type : Ast.func_type
+val xv_func_def : Ast.func_def
+val xv_expr : Ast.expr
+val xv_eq_op : Ast.binop
+val xv_eq_expr : Ast.expr
+val xv_comp_unit : Ast.comp_unit
+val xv_block : Ast.stmt
+val xv_and_expr : Ast.expr
+val xv_add_op : Ast.binop
+val xv_add_expr : Ast.expr
+val menhir_end_marker : int

@@ -1,0 +1,7 @@
+(library
+ (name lex_project)
+ (modules ast ir lexer parser semantic codegen))
+
+(ocamllex lexer)
+(menhir
+ (modules parser))

@@ -1,0 +1,30 @@
+
+** Conflict (shift/reduce) in state 93.
+** Token involved: ELSE
+** This state is reached from comp_unit after reading:
+
+func_type ID LPAREN loption(separated_nonempty_list(COMMA,param)) RPAREN LBRACE IF LPAREN expr RPAREN IF LPAREN expr RPAREN stmt
+
+** The derivations that appear below have the following common factor:
+** (The question mark symbol (?) represents the spot where the derivations begin to differ.)
+
+comp_unit 
+list(func_def) EOF 
+func_def list(func_def) 
+func_type ID LPAREN loption(separated_nonempty_list(COMMA,param)) RPAREN block 
+                                                                         LBRACE list(stmt) RBRACE 
+                                                                                stmt list(stmt) 
+                                                                                (?)
+
+** In state 93, looking ahead at ELSE, shifting is permitted
+** because of the following sub-derivation:
+
+IF LPAREN expr RPAREN stmt ELSE stmt 
+                      IF LPAREN expr RPAREN stmt . ELSE stmt 
+
+** In state 93, looking ahead at ELSE, reducing production
+** stmt -> IF LPAREN expr RPAREN stmt
+** is permitted because of the following sub-derivation:
+
+IF LPAREN expr RPAREN stmt ELSE stmt // lookahead token appears
+                      IF LPAREN expr RPAREN stmt . 
